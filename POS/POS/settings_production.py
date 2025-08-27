@@ -26,7 +26,9 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # CORS for production
 CORS_ALLOWED_ORIGINS = [
+    config('BACKEND_URL', default='https://pos-backend-cqf3.onrender.com'),
     config('FRONTEND_URL', default='https://your-app.netlify.app'),
+    https://pos-backend-cqf3.onrender.com
 ]
 CORS_ALLOW_ALL_ORIGINS = False
 
