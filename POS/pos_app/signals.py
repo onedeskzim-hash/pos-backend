@@ -18,27 +18,8 @@ def handle_transaction_stock_update(sender, instance, created, **kwargs):
                 product.stock_quantity -= quantity
                 product.save()
                 
-                print(f"Checking low stock (old system) for {product.name}: stock={product.stock_quantity}, threshold={product.low_stock_threshold}")
-                if product.stock_quantity <= product.low_stock_threshold:
-                    # Check if low stock notification already exists for this product (within last 24 hours)
-                    from datetime import datetime, timedelta
-                    yesterday = datetime.now() - timedelta(days=1)
-                    existing_low_stock = Notification.objects.filter(
-                        notification_type='LOW_STOCK',
-                        related_product=product,
-                        timestamp__gte=yesterday
-                    ).exists()
-                    
-                    if not existing_low_stock:
-                        print(f"Creating low stock notification (old system) for {product.name}")
-                        Notification.objects.create(
-                            message=f"Low stock alert: {product.name} has only {product.stock_quantity} units remaining (threshold: {product.low_stock_threshold})",
-                            notification_type='LOW_STOCK',
-                            related_product=product
-                        )
-                        print(f"Low stock notification (old system) created successfully")
-                    else:
-                        print(f"Low stock notification already exists for {product.name} within last 24 hours")
+                # Check for low stock and create notification
+                check_and_create_low_stock_notification(product)
 
 
 @receiver(post_save, sender=Payment)
@@ -220,11 +201,20 @@ def check_payment_overdue(sender, instance, **kwargs):
         from datetime import datetime, timedelta
         overdue_date = instance.date_created + timedelta(days=instance.payment_terms_days)
         if datetime.now().date() > overdue_date.date():
-            Notification.objects.create(
-                message=f"Payment overdue: {instance.name} has outstanding balance of ${instance.outstanding_balance}",
+            # Check if payment due notification already exists for this customer (within last 7 days)
+            week_ago = datetime.now() - timedelta(days=7)
+            existing_payment_due = Notification.objects.filter(
                 notification_type='PAYMENT_DUE',
-                related_customer=instance
-            )
+                related_customer=instance,
+                timestamp__gte=week_ago
+            ).exists()
+            
+            if not existing_payment_due:
+                Notification.objects.create(
+                    message=f"💰 Payment Overdue: {instance.name} has outstanding balance of ${instance.outstanding_balance} (due {overdue_date.strftime('%Y-%m-%d')})",
+                    notification_type='PAYMENT_DUE',
+                    related_customer=instance
+                )
 
 
 
@@ -243,28 +233,35 @@ def create_expense_notification(sender, instance, created, **kwargs):
 @receiver(post_save, sender=StockMovement)
 def check_low_stock_after_movement(sender, instance, created, **kwargs):
     """Check for low stock after any stock movement"""
-    if created and instance.movement_type in ['SALE', 'ADJUSTMENT_OUT', 'RETURN_OUT']:
-        product = instance.product
-        print(f"Checking low stock after movement for {product.name}: stock={product.stock_quantity}, threshold={product.low_stock_threshold}")
+    if created and instance.product and instance.movement_type in ['SALE', 'ADJUSTMENT_OUT', 'RETURN_OUT']:
+        check_and_create_low_stock_notification(instance.product)
+
+
+def check_and_create_low_stock_notification(product):
+    """Helper function to check and create low stock notifications"""
+    if product.stock_quantity <= product.low_stock_threshold:
+        # Check if low stock notification already exists for this product (within last 24 hours)
+        from datetime import datetime, timedelta
+        yesterday = datetime.now() - timedelta(days=1)
+        existing_low_stock = Notification.objects.filter(
+            notification_type='LOW_STOCK',
+            related_product=product,
+            timestamp__gte=yesterday
+        ).exists()
         
-        if product.stock_quantity <= product.low_stock_threshold:
-            # Check if low stock notification already exists for this product (within last 24 hours)
-            from datetime import datetime, timedelta
-            yesterday = datetime.now() - timedelta(days=1)
-            existing_low_stock = Notification.objects.filter(
+        if not existing_low_stock:
+            Notification.objects.create(
+                message=f"⚠️ Low Stock Alert: {product.name} has only {product.stock_quantity} units remaining (reorder at {product.low_stock_threshold})",
                 notification_type='LOW_STOCK',
-                related_product=product,
-                timestamp__gte=yesterday
-            ).exists()
-            
-            if not existing_low_stock:
-                print(f"Creating low stock notification after movement for {product.name}")
-                Notification.objects.create(
-                    message=f"Low stock alert: {product.name} has only {product.stock_quantity} units remaining (threshold: {product.low_stock_threshold})",
-                    notification_type='LOW_STOCK',
-                    related_product=product
-                )
-                print(f"Low stock notification after movement created successfully")
+                related_product=product
+            )
+            print(f"Low stock notification created for {product.name}")
+
+
+@receiver(post_save, sender=Product)
+def check_product_stock_on_save(sender, instance, **kwargs):
+    """Check for low stock when product is saved/updated"""
+    check_and_create_low_stock_notification(instance)
 
 
 @receiver(post_save, sender=Transaction)
@@ -332,7 +329,7 @@ def create_invoice_payment_collection(sender, instance, created, **kwargs):
     if created and instance.status == 'PENDING' and instance.customer:
         from datetime import datetime, timedelta
         
-        due_date = instance.date_due.date() if instance.date_due else datetime.now().date() + timedelta(days=30)
+        due_date = instance.due_date if instance.due_date else datetime.now().date() + timedelta(days=30)
         
         PaymentCollection.objects.create(
             collection_type='CUSTOMER_DEBT',

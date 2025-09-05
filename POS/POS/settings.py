@@ -154,7 +154,7 @@ REST_FRAMEWORK = {
 
 # Spectacular settings
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'POS System API',
+    'TITLE': 'GiveSolar-POS API',
     'DESCRIPTION': 'A comprehensive Point of Sale system for solar panel and electrical supplies dealers',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
@@ -182,3 +182,12 @@ CORS_EXPOSE_HEADERS = [
     'content-disposition',
     'content-type',
 ]
+
+# Email Configuration
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For testing - prints to console
+DEFAULT_FROM_EMAIL = 'pos-system@yourcompany.com'
+EMAIL_HOST = 'smtp.gmail.com'  # For production
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = ''  # Set in production
+EMAIL_HOST_PASSWORD = ''  # Set in production

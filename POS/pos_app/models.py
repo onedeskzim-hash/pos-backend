@@ -27,6 +27,9 @@ class BusinessProfile(models.Model):
     zimra_branch_code = models.CharField(max_length=20, blank=True)
     zimra_terminal_id = models.CharField(max_length=20, blank=True)
 
+    class Meta:
+        ordering = ['id']
+
     def __str__(self):
         return self.business_name
 
@@ -44,6 +47,35 @@ class StaffProfile(models.Model):
     can_override_price = models.BooleanField(default=False)
     can_discount = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    
+    # Page Access Permissions
+    can_access_settings = models.BooleanField(default=False)
+    can_access_reports = models.BooleanField(default=False)
+    can_access_stock_movement = models.BooleanField(default=False)
+    can_view_dashboard_sales = models.BooleanField(default=False)
+    can_view_dashboard_reports = models.BooleanField(default=False)
+    can_view_recent_activity = models.BooleanField(default=False)
+    
+    # Delete Permissions
+    can_delete_invoices = models.BooleanField(default=False)
+    can_delete_customers = models.BooleanField(default=False)
+    can_delete_resellers = models.BooleanField(default=False)
+    can_delete_transactions = models.BooleanField(default=False)
+    can_delete_expenses = models.BooleanField(default=False)
+    can_delete_stock_movements = models.BooleanField(default=False)
+    can_delete_notifications = models.BooleanField(default=False)
+    
+    # Update Permissions
+    can_update_invoices = models.BooleanField(default=False)
+    can_update_customers = models.BooleanField(default=False)
+    can_update_resellers = models.BooleanField(default=False)
+    can_update_transactions = models.BooleanField(default=False)
+    can_update_expenses = models.BooleanField(default=False)
+    can_update_stock_movements = models.BooleanField(default=False)
+    can_update_notifications = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['id']
 
     def __str__(self):
         return f"{self.display_name} ({self.role})"
@@ -56,6 +88,7 @@ class Category(models.Model):
 
     class Meta:
         verbose_name_plural = "Categories"
+        ordering = ['name']
 
     def __str__(self):
         return self.name
@@ -81,7 +114,7 @@ class Product(models.Model):
 
     name = models.CharField(max_length=200, default='Product Name')
     product_unique_code = models.CharField(max_length=50, unique=True, blank=True, null=True, default='')
-    barcode = models.CharField(max_length=50, unique=True, blank=True, null=True, default='')
+    barcode = models.CharField(max_length=50, blank=True, null=True)
     category = models.ForeignKey(Category, on_delete=models.CASCADE, null=True, blank=True)
     unit = models.CharField(max_length=20, default='unit')
     cost_price_avg = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -109,6 +142,9 @@ class Product(models.Model):
     def save(self, *args, **kwargs):
         if not self.product_unique_code:
             self.product_unique_code = self.generate_product_code()
+        # Fix barcode unique constraint - set to None if empty
+        if self.barcode == '':
+            self.barcode = None
         super().save(*args, **kwargs)
     
     def generate_product_code(self):
@@ -267,11 +303,12 @@ class Transaction(models.Model):
         if hasattr(self, 'items') and self.items.exists():
             items = list(self.items.all())
             if len(items) == 1:
-                return items[0].product.name
+                return f"{items[0].product.name} (x{items[0].quantity})"
             elif len(items) > 1:
-                return f"{items[0].product.name}, etc"
+                product_list = [f"{item.product.name} (x{item.quantity})" for item in items]
+                return "; ".join(product_list)
             return "No Products"
-        return self.product.name if self.product else "No Product"
+        return f"{self.product.name} (x{self.quantity})" if self.product else "No Product"
     
     @property
     def reseller_balance(self):
@@ -298,8 +335,9 @@ class Transaction(models.Model):
         if self.is_taxed:
             business = BusinessProfile.objects.first()
             if business:
-                tax_rate = business.zimra_tax_rate / 100
-                self.tax_amount = self.total_amount * tax_rate
+                from decimal import Decimal
+                tax_rate = business.zimra_tax_rate / Decimal('100')
+                self.tax_amount = Decimal(str(self.total_amount)) * tax_rate
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -352,17 +390,39 @@ class Invoice(models.Model):
     invoice_number = models.CharField(max_length=50, unique=True, blank=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, null=True, blank=True)
     transactions = models.ManyToManyField(Transaction, blank=True)
-    date_created = models.DateTimeField(auto_now_add=True)
-    date_due = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    due_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     notes = models.TextField(blank=True)
+
+    def save(self, *args, **kwargs):
+        if not self.invoice_number:
+            from datetime import datetime
+            self.invoice_number = f"INV-{datetime.now().strftime('%Y%m%d')}-{Invoice.objects.count() + 1:04d}"
+        super().save(*args, **kwargs)
 
     def __str__(self):
         customer_name = self.customer.name if self.customer else "No Customer"
         return f"Invoice {self.invoice_number} - {customer_name}"
+
+
+class InvoiceItem(models.Model):
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.IntegerField(validators=[MinValueValidator(1)], default=1)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        self.total_price = self.unit_price * self.quantity
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.product.name} x {self.quantity} @ ${self.unit_price}"
 
 
 class Payment(models.Model):
@@ -718,7 +778,28 @@ class PaymentCollection(models.Model):
         return f"Payment Collection - ${self.amount}"
 
 
-
-
-
-        
+class ReportSchedule(models.Model):
+    FORMAT_CHOICES = [
+        ('excel', 'Excel'),
+        ('pdf', 'PDF'),
+        ('json', 'JSON'),
+    ]
+    
+    FREQUENCY_CHOICES = [
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    email = models.EmailField()
+    format = models.CharField(max_length=10, choices=FORMAT_CHOICES, default='excel')
+    frequency = models.CharField(max_length=10, choices=FREQUENCY_CHOICES, default='daily')
+    time = models.TimeField(default='09:00')
+    is_active = models.BooleanField(default=True)
+    last_sent = models.DateTimeField(null=True, blank=True)
+    next_run = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return f"{self.email} - {self.frequency} {self.format} reports"

@@ -5,6 +5,9 @@ from rest_framework.views import APIView
 from django.db.models import Sum, Count, Q, F
 from drf_spectacular.utils import extend_schema
 from django.db import transaction
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+from rest_framework.authtoken.models import Token
 from .models import *
 from .serializers import *
 import logging
@@ -15,11 +18,47 @@ logger = logging.getLogger(__name__)
 class BusinessProfileViewSet(viewsets.ModelViewSet):
     queryset = BusinessProfile.objects.all()
     serializer_class = BusinessProfileSerializer
+    
+    def perform_update(self, serializer):
+        # Handle logo upload
+        if 'logo' in self.request.FILES:
+            serializer.validated_data['logo'] = self.request.FILES['logo']
+        serializer.save()
 
 
 class StaffProfileViewSet(viewsets.ModelViewSet):
     queryset = StaffProfile.objects.all()
     serializer_class = StaffProfileSerializer
+
+
+class UserViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+    
+    def perform_create(self, serializer):
+        user = serializer.save()
+        if 'password' in self.request.data:
+            user.set_password(self.request.data['password'])
+            user.save()
+    
+    def perform_update(self, serializer):
+        user = serializer.save()
+        if 'password' in self.request.data and self.request.data['password']:
+            user.set_password(self.request.data['password'])
+            user.save()
+    
+    @action(detail=True, methods=['post'])
+    def change_password(self, request, pk=None):
+        user = self.get_object()
+        old_password = request.data.get('old_password')
+        new_password = request.data.get('new_password')
+        
+        if not user.check_password(old_password):
+            return Response({'error': 'Invalid old password'}, status=400)
+        
+        user.set_password(new_password)
+        user.save()
+        return Response({'status': 'Password changed successfully'})
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -183,7 +222,7 @@ class TransactionViewSet(viewsets.ModelViewSet):
         business = BusinessProfile.objects.first()
         
         print("\n" + "=" * 50)
-        print(f"           {business.business_name if business else 'POS SYSTEM'}")
+        print(f"           {business.business_name if business else 'GiveSolar-POS'}")
         if business:
             print(f"           {business.address}")
             print(f"           Tel: {business.phone}")
@@ -257,7 +296,37 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         try:
-            serializer.save(created_by=self.request.user)
+            from decimal import Decimal
+            items_data = self.request.data.get('items', [])
+            invoice = serializer.save(created_by=self.request.user)
+            
+            # Create invoice items
+            subtotal = Decimal('0')
+            for item_data in items_data:
+                product = Product.objects.get(id=item_data['product'])
+                quantity = int(item_data['quantity'])
+                unit_price = Decimal(str(item_data.get('unit_price', product.default_sale_price)))
+                
+                InvoiceItem.objects.create(
+                    invoice=invoice,
+                    product=product,
+                    quantity=quantity,
+                    unit_price=unit_price
+                )
+                subtotal += unit_price * quantity
+            
+            # Calculate tax and total
+            business = BusinessProfile.objects.first()
+            tax_rate = business.zimra_tax_rate / 100 if business and business.zimra_enabled else Decimal('0')
+            tax_amount = subtotal * tax_rate
+            total_amount = subtotal + tax_amount
+            
+            # Update invoice totals
+            invoice.subtotal = subtotal
+            invoice.tax_amount = tax_amount
+            invoice.total_amount = total_amount
+            invoice.save()
+            
         except Exception as e:
             logger.error(f"Error creating invoice: {e}")
             raise
@@ -458,14 +527,14 @@ class ReceiptViewSet(viewsets.ModelViewSet):
                 'zimra_receipt_no': receipt.zimra_receipt_no,
             },
             'business': {
-                'business_name': business.business_name if business else 'POS System',
+                'business_name': business.business_name if business else 'GiveSolar-POS',
                 'legal_name': business.legal_name if business else '',
                 'address': business.address if business else '',
                 'phone': business.phone if business else '',
                 'email': business.email if business else '',
                 'tax_number': business.tax_number if business else '',
                 'receipt_footer_text': business.receipt_footer_text if business else 'Thank you for your business!',
-                'logo': f'http://127.0.0.1:8000{business.logo.url}' if business and business.logo else None,
+                'logo': f'https://pos-backend-cqf3.onrender.com{business.logo.url}' if business and business.logo else None,
             },
             'transaction': {
                 'product_name': receipt.transaction.product_names,
@@ -529,7 +598,7 @@ class ReceiptViewSet(viewsets.ModelViewSet):
         
         # Business info
         p.setFont("Helvetica-Bold", 14)
-        p.drawCentredString(2*inch, y_pos, business.business_name if business else 'POS System')
+        p.drawCentredString(2*inch, y_pos, business.business_name if business else 'GiveSolar-POS')
         y_pos -= 0.2*inch
         
         p.setFont("Helvetica", 8)
@@ -1133,3 +1202,61 @@ class DashboardAPIView(APIView):
         }
         
         return Response(dashboard_data)
+
+
+class ReportScheduleViewSet(viewsets.ModelViewSet):
+    queryset = ReportSchedule.objects.all()
+    serializer_class = ReportScheduleSerializer
+    
+    def perform_create(self, serializer):
+        from datetime import datetime, timedelta
+        from django.utils import timezone
+        
+        schedule = serializer.save(user=self.request.user)
+        
+        # Calculate next run time
+        now = timezone.now()
+        time_obj = schedule.time
+        
+        if schedule.frequency == 'daily':
+            next_run = now.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
+        elif schedule.frequency == 'weekly':
+            next_run = now.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+            days_ahead = 7 - now.weekday()
+            if days_ahead <= 0 or (days_ahead == 7 and next_run <= now):
+                days_ahead += 7
+            next_run += timedelta(days=days_ahead)
+        else:  # monthly
+            next_run = now.replace(day=1, hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+            if next_run <= now:
+                if now.month == 12:
+                    next_run = next_run.replace(year=now.year + 1, month=1)
+                else:
+                    next_run = next_run.replace(month=now.month + 1)
+        
+        schedule.next_run = next_run
+        schedule.save()
+    
+    @action(detail=True, methods=['post'])
+    def send_now(self, request, pk=None):
+        """Send report immediately"""
+        from .services import EmailService
+        
+        schedule = self.get_object()
+        success = EmailService.send_scheduled_report(schedule.id)
+        
+        if success:
+            return Response({'status': 'Report sent successfully'})
+        else:
+            return Response({'error': 'Failed to send report'}, status=500)
+    
+    @action(detail=True, methods=['post'])
+    def toggle_active(self, request, pk=None):
+        """Toggle schedule active status"""
+        schedule = self.get_object()
+        schedule.is_active = not schedule.is_active
+        schedule.save()
+        
+        return Response({'status': f'Schedule {"activated" if schedule.is_active else "deactivated"}'})

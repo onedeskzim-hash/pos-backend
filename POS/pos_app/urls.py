@@ -5,6 +5,7 @@ from . import views, auth_views
 router = DefaultRouter()
 router.register(r'business-profile', views.BusinessProfileViewSet)
 router.register(r'staff-profiles', views.StaffProfileViewSet)
+router.register(r'auth/users', views.UserViewSet)
 router.register(r'categories', views.CategoryViewSet)
 router.register(r'suppliers', views.SupplierViewSet)
 router.register(r'products', views.ProductViewSet)
@@ -25,6 +26,7 @@ router.register(r'losses', views.LossViewSet)
 router.register(r'profit-loss-reports', views.ProfitLossReportViewSet)
 router.register(r'daily-summaries', views.DailySummaryViewSet)
 router.register(r'payment-collections', views.PaymentCollectionViewSet)
+router.register(r'report-schedules', views.ReportScheduleViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

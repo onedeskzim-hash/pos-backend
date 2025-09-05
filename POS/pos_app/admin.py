@@ -88,13 +88,28 @@ class ResellerSaleAdmin(admin.ModelAdmin):
     date_hierarchy = 'timestamp'
 
 
+class InvoiceItemInline(admin.TabularInline):
+    model = InvoiceItem
+    extra = 1
+    readonly_fields = ['total_price']
+
+
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    list_display = ['invoice_number', 'customer', 'status', 'total_amount', 'date_created', 'date_due']
-    list_filter = ['status', 'date_created']
+    list_display = ['invoice_number', 'customer', 'status', 'total_amount', 'created_at', 'due_date']
+    list_filter = ['status', 'created_at']
     search_fields = ['invoice_number', 'customer__name']
-    readonly_fields = ['total_amount', 'tax_amount', 'date_created']
-    date_hierarchy = 'date_created'
+    readonly_fields = ['invoice_number', 'subtotal', 'tax_amount', 'total_amount', 'created_at']
+    date_hierarchy = 'created_at'
+    inlines = [InvoiceItemInline]
+
+
+@admin.register(InvoiceItem)
+class InvoiceItemAdmin(admin.ModelAdmin):
+    list_display = ['invoice', 'product', 'quantity', 'unit_price', 'total_price']
+    list_filter = ['invoice__created_at']
+    search_fields = ['invoice__invoice_number', 'product__name']
+    readonly_fields = ['total_price']
 
 
 @admin.register(Payment)

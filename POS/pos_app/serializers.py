@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.contrib.auth.models import User
 from .models import *
 
 
@@ -8,7 +9,18 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'is_staff', 'is_superuser', 'date_joined']
+        extra_kwargs = {
+            'password': {'write_only': True}
+        }
+
+
 class StaffProfileSerializer(serializers.ModelSerializer):
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    
     class Meta:
         model = StaffProfile
         fields = '__all__'
@@ -115,12 +127,22 @@ class ResellerSerializer(serializers.ModelSerializer):
         return data
 
 
+class TransactionItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    
+    class Meta:
+        model = TransactionItem
+        fields = '__all__'
+
+
 class TransactionSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     reseller_name = serializers.CharField(source='reseller.name', read_only=True)
     display_sale_price = serializers.SerializerMethodField()
     display_reseller_balance = serializers.SerializerMethodField()
     display_product_names = serializers.SerializerMethodField()
+    display_total_quantity = serializers.SerializerMethodField()
+    items = TransactionItemSerializer(many=True, read_only=True)
     
     class Meta:
         model = Transaction
@@ -129,10 +151,15 @@ class TransactionSerializer(serializers.ModelSerializer):
     
     def get_display_sale_price(self, obj):
         if obj.reseller:
-            # For reseller: if dealership_price exists, use it as system price
-            if obj.dealership_price and float(obj.dealership_price) > 0:
+            # For reseller: calculate system price from items or product default prices
+            if hasattr(obj, 'items') and obj.items.exists():
+                return sum(float(item.product.default_sale_price) * item.quantity for item in obj.items.all())
+            elif obj.product:
+                return float(obj.product.default_sale_price) * obj.quantity
+            # Fallback: if dealership_price exists, use it
+            elif obj.dealership_price and float(obj.dealership_price) > 0:
                 return float(obj.dealership_price) * obj.quantity
-            # Otherwise assume 75% of total is system price
+            # Last resort: assume 75% of total is system price
             return float(obj.total_amount) * 0.75
         elif obj.sale_price and float(obj.sale_price) > 0:
             return float(obj.sale_price) * obj.quantity
@@ -144,7 +171,8 @@ class TransactionSerializer(serializers.ModelSerializer):
         if obj.reseller and obj.total_amount:
             total_amount = float(obj.total_amount)
             system_sale_price = self.get_display_sale_price(obj)
-            return total_amount - system_sale_price
+            balance = total_amount - system_sale_price
+            return balance if balance > 0 else 0
         return 0
     
     def get_display_product_names(self, obj):
@@ -152,15 +180,27 @@ class TransactionSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'items') and obj.items.exists():
             items = list(obj.items.all())
             if len(items) == 1:
-                return items[0].product.name
+                return f"{items[0].product.name} (x{items[0].quantity})"
             elif len(items) > 1:
-                return f"{items[0].product.name}, etc"
+                product_list = [f"{item.product.name} (x{item.quantity})" for item in items]
+                return "; ".join(product_list)
         # Check if transaction has a single product
         elif obj.product:
-            return obj.product.name
+            return f"{obj.product.name} (x{obj.quantity})"
         # Fallback for transactions without product references
         else:
-            return "Mixed Products"
+            return "No Products"
+    
+    def get_display_total_quantity(self, obj):
+        # Check if transaction has items
+        if hasattr(obj, 'items') and obj.items.exists():
+            return sum(item.quantity for item in obj.items.all())
+        # Check if transaction has a single product
+        elif obj.product:
+            return obj.quantity
+        # Fallback
+        else:
+            return 0
 
 
 class ResellerSaleSerializer(serializers.ModelSerializer):
@@ -169,13 +209,22 @@ class ResellerSaleSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class InvoiceItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    
+    class Meta:
+        model = InvoiceItem
+        fields = '__all__'
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    items = InvoiceItemSerializer(many=True, read_only=True)
     
     class Meta:
         model = Invoice
         fields = '__all__'
-        read_only_fields = ('date_created',)
+        read_only_fields = ('created_at', 'invoice_number')
 
 
 
@@ -279,4 +328,18 @@ class PaymentCollectionSerializer(serializers.ModelSerializer):
     def validate_amount(self, value):
         if value <= 0:
             raise serializers.ValidationError('Amount must be greater than zero')
+        return value
+
+
+class ReportScheduleSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.username', read_only=True)
+    
+    class Meta:
+        model = ReportSchedule
+        fields = '__all__'
+        read_only_fields = ('user', 'last_sent', 'next_run', 'created_at')
+    
+    def validate_email(self, value):
+        if not value or '@' not in value:
+            raise serializers.ValidationError('Valid email address is required')
         return value
